@@ -76,6 +76,31 @@ def test_spawn_interrupt_closes_each_pipe_fd_exactly_once(monkeypatch: pytest.Mo
     assert len(closed) == 4, f"expected exactly one close per pipe end, got {closed}"
 
 
+def test_interrupt_after_spawn_returns_closes_each_pipe_fd_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A BaseException landing after Popen returns must not double-close the write ends.
+
+    ``process`` is already assigned when the interrupt lands (delivered here via
+    the ``pid`` read), so a ``process is not None`` guard alone makes the
+    finally close the two write fds that the except block already released —
+    the same fd-recycle hazard the guard was meant to remove.
+    """
+    runner = LocalSandbox._run_posix_command
+    closed = _record_os_close(monkeypatch)
+
+    class InterruptedAfterSpawn:
+        @property
+        def pid(self) -> int:
+            raise KeyboardInterrupt
+
+    with patch.object(subprocess, "Popen", return_value=InterruptedAfterSpawn()):
+        with pytest.raises(KeyboardInterrupt):
+            runner(["whatever"], 1.0, None)
+
+    duplicated = sorted({fd for fd in closed if closed.count(fd) > 1})
+    assert not duplicated, f"fds {duplicated} were closed more than once: {closed}"
+    assert len(closed) == 4, f"expected exactly one close per pipe end, got {closed}"
+
+
 def test_successful_spawn_closes_write_fds_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """The guard must not skip the parent's write-end close after a real spawn."""
     if sys.platform == "win32":

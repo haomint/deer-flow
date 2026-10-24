@@ -888,6 +888,7 @@ class LocalSandbox(Sandbox):
         stdout_read_fd, stdout_write_fd = os.pipe()
         stderr_read_fd, stderr_write_fd = os.pipe()
         process: subprocess.Popen | None = None
+        pipe_fds_released = False
         try:
             process = subprocess.Popen(
                 args,
@@ -901,20 +902,24 @@ class LocalSandbox(Sandbox):
         except BaseException:
             # BaseException, not Exception: a KeyboardInterrupt mid-spawn must
             # still release the fds; each fd is closed exactly once here, and
-            # the guarded finally below never closes them a second time.
+            # the guarded finally below never closes them a second time —
+            # including when the interrupt lands after ``process`` is already
+            # assigned, which is why the release flag, not the assignment
+            # alone, gates the finally.
             for fd in (stdout_read_fd, stdout_write_fd, stderr_read_fd, stderr_write_fd):
                 try:
                     os.close(fd)
                 except OSError:
                     # Preserve the original Popen failure; fd cleanup is best-effort.
                     pass
+            pipe_fds_released = True
             raise
         finally:
             # Only the successful-spawn path owes the parent's write-end close;
             # on failure the except block already released all four fds, and a
             # second close could hit a descriptor number another thread claimed
             # in between.
-            if process is not None:
+            if process is not None and not pipe_fds_released:
                 for fd in (stdout_write_fd, stderr_write_fd):
                     try:
                         os.close(fd)
@@ -1020,6 +1025,7 @@ class LocalSandbox(Sandbox):
         stdout_read_fd, stdout_write_fd = os.pipe()
         stderr_read_fd, stderr_write_fd = os.pipe()
         process: subprocess.Popen | None = None
+        pipe_fds_released = False
         try:
             process = subprocess.Popen(
                 args,
@@ -1036,20 +1042,24 @@ class LocalSandbox(Sandbox):
         except BaseException:
             # BaseException, not Exception: a KeyboardInterrupt mid-spawn must
             # still release the fds; each fd is closed exactly once here, and
-            # the guarded finally below never closes them a second time.
+            # the guarded finally below never closes them a second time —
+            # including when the interrupt lands after ``process`` is already
+            # assigned (e.g. during the ``pid`` read), which is why the
+            # release flag, not the assignment alone, gates the finally.
             for fd in (stdout_read_fd, stdout_write_fd, stderr_read_fd, stderr_write_fd):
                 try:
                     os.close(fd)
                 except OSError:
                     # Preserve the original Popen failure; fd cleanup is best-effort.
                     pass
+            pipe_fds_released = True
             raise
         finally:
             # Only the successful-spawn path owes the parent's write-end close;
             # on failure the except block already released all four fds, and a
             # second close could hit a descriptor number another thread claimed
             # in between.
-            if process is not None:
+            if process is not None and not pipe_fds_released:
                 for fd in (stdout_write_fd, stderr_write_fd):
                     try:
                         os.close(fd)
