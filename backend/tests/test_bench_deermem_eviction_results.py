@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
 from scripts.benchmark.deermem_eviction.config import load_evaluation_config
 from scripts.benchmark.deermem_eviction.dataset import EvidenceRecord
 from scripts.benchmark.deermem_eviction.policy import evaluate_case
@@ -87,3 +86,46 @@ def test_public_policy_run_omits_dataset_text_and_refuses_overwrite(tmp_path: Pa
             dataset_path=dataset_path,
             backend_root=BACKEND_ROOT,
         )
+
+
+def test_policy_run_records_unknown_git_metadata_outside_a_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A zip/tarball checkout (or a host without git on PATH) must still produce run files.
+
+    The README-documented ``run-policy`` command builds run.json's provenance
+    block before any output file is written; an unguarded ``git rev-parse``
+    failure used to abort the whole run with a bare CalledProcessError
+    traceback and no artifacts. Sibling benchmarks already degrade to
+    "unknown" (checkpoint_bench_common.resolve_git_sha).
+    """
+    import subprocess as subprocess_module
+
+    config_path = EVAL_ROOT / "configs" / "pr4789-reproduction-v1.yaml"
+    official_manifest_path = EVAL_ROOT / "manifests" / "longmemeval-pr4789-v1.json"
+    synthetic_manifest_path = EVAL_ROOT / "manifests" / "synthetic-corrections-pr4789-v1.json"
+    prompt_path = EVAL_ROOT / "prompts" / "answer-v1.txt"
+    config = load_evaluation_config(config_path)
+    case = _case()
+    rows = [evaluate_case(case, policy_name="confidence", capacity=7)]
+    dataset_path = tmp_path / "private-dataset.json"
+    dataset_path.write_text("[]")
+    output_dir = tmp_path / "run"
+
+    def failing_git_run(*args: object, **kwargs: object) -> object:
+        raise subprocess_module.CalledProcessError(128, "git", output="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess_module, "run", failing_git_run)
+
+    write_policy_run(
+        output_dir,
+        results=rows,
+        config=config,
+        config_path=config_path,
+        official_manifest_path=official_manifest_path,
+        synthetic_manifest_path=synthetic_manifest_path,
+        prompt_path=prompt_path,
+        dataset_path=dataset_path,
+        backend_root=BACKEND_ROOT,
+    )
+
+    run_payload = json.loads((output_dir / "run.json").read_text())
+    assert run_payload["git"] == {"head": "unknown", "dirty": None}

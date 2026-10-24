@@ -24,12 +24,21 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 
 def _git_metadata(backend_root: Path) -> dict[str, Any]:
-    def run(*args: str) -> str:
-        completed = subprocess.run(["git", *args], cwd=backend_root, check=True, capture_output=True, text=True)
+    def run(*args: str) -> str | None:
+        try:
+            completed = subprocess.run(["git", *args], cwd=backend_root, check=True, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
         return completed.stdout.strip()
 
+    # A zip/tarball checkout or a host without git on PATH has no metadata to
+    # record; degrade to "unknown" like checkpoint_bench_common.resolve_git_sha
+    # instead of aborting run-policy/run-qa before any output file is written.
+    head = run("rev-parse", "HEAD")
+    if head is None:
+        return {"head": "unknown", "dirty": None}
     return {
-        "head": run("rev-parse", "HEAD"),
+        "head": head,
         "dirty": bool(run("status", "--porcelain")),
     }
 
